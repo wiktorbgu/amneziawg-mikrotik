@@ -1,4 +1,25 @@
 # Build image with GO
+FROM --platform=$BUILDPLATFORM golang:alpine AS build-go
+ARG TARGETARCH
+ARG TARGETOS
+ARG TARGETVARIANT
+WORKDIR /go
+
+RUN apk add --no-cache git make bash build-base linux-headers
+
+RUN git clone --depth=1 https://github.com/amnezia-vpn/amneziawg-go.git
+
+# detect GOARM
+RUN set -eux; \
+    GOARM=""; \
+    if [ "$TARGETARCH" = "arm" ]; then \
+        GOARM="${TARGETVARIANT#v}"; \
+    fi; \
+    echo "GOOS=$TARGETOS GOARCH=$TARGETARCH GOARM=$GOARM"; \
+    cd /go/amneziawg-go && \
+    CGO_ENABLED=0 GOOS=$TARGETOS GOARCH=$TARGETARCH GOARM=$GOARM make
+
+# Build image with GO
 FROM --platform=linux/amd64 golang:alpine AS build-linux-amd64
 FROM --platform=linux/arm/v7 golang:alpine AS build-linux-armv7
 FROM --platform=linux/arm64 golang:alpine AS build-linux-arm64
@@ -20,18 +41,17 @@ RUN echo "Building for platform: $TARGETARCH" && \
             apk add --no-cache git make bash build-base linux-headers ;; \
         *) echo "Unsupported platform: $TARGETPLATFORM" && exit 1 ;; \
     esac
-    
-RUN git clone --depth=1 https://github.com/amnezia-vpn/amneziawg-tools.git && \
-    git clone --depth=1 https://github.com/amnezia-vpn/amneziawg-go.git
 
+RUN git clone --depth=1 https://github.com/amnezia-vpn/amneziawg-tools.git 
 RUN cd /go/amneziawg-tools/src && make
-RUN cd /go/amneziawg-go && make
+
 # make work structure
 RUN mkdir -p /tmp/build/usr/bin/ \
-    && mv /go/amneziawg-go/amneziawg-go /tmp/build/usr/bin/amneziawg-go \
     && mv /go/amneziawg-tools/src/wg /tmp/build/usr/bin/awg \
     && mv /go/amneziawg-tools/src/wg-quick/linux.bash /tmp/build/usr/bin/awg-quick
 COPY wireguard-fs /tmp/build/
+COPY --from=build-go /go/amneziawg-go/amneziawg-go/ /tmp/build/usr/bin/amneziawg-go
+COPY entrypoint.sh /tmp/build/
 
 # Base image for different architecture
 FROM --platform=linux/amd64 alpine:latest AS linux-amd64
@@ -94,8 +114,8 @@ RUN sed -i 's/^\(tty\d\:\:\)/#\1/' /etc/inittab && \
   chmod +x /etc/init.d/wg-quick && \
   chmod +x /data/pre_up.sh && \
   #
-  rc-update add wg-quick default
+  rc-update add wg-quick default && \
+  chmod +x /entrypoint.sh
 
 VOLUME ["/sys/fs/cgroup"]
-HEALTHCHECK --interval=5m --timeout=30s CMD /bin/bash /data/healthcheck.sh
-CMD ["/sbin/init"]
+ENTRYPOINT ["/entrypoint.sh"]
